@@ -1,4 +1,4 @@
-import { Agent, type AgentEvent } from "@mariozechner/pi-agent-core";
+import { Agent, type AgentEvent, type ThinkingLevel } from "@mariozechner/pi-agent-core";
 import { getModel, type ImageContent } from "@mariozechner/pi-ai";
 import {
 	AgentSession,
@@ -23,8 +23,9 @@ import type { ChannelInfo, SlackContext, UserInfo } from "./slack.js";
 import type { ChannelStore } from "./store.js";
 import { createMomTools, setUploadFunction } from "./tools/index.js";
 
-// Hardcoded model for now - TODO: make configurable (issue #63)
-const model = getModel("anthropic", "claude-sonnet-4-5");
+const DEFAULT_PROVIDER = "anthropic";
+const DEFAULT_MODEL = "claude-sonnet-4-7";
+const DEFAULT_THINKING_LEVEL: ThinkingLevel = "off";
 
 export interface PendingMessage {
 	userName: string;
@@ -42,12 +43,12 @@ export interface AgentRunner {
 	abort(): void;
 }
 
-async function getAnthropicApiKey(authStorage: AuthStorage): Promise<string> {
-	const key = await authStorage.getApiKey("anthropic");
+async function getApiKeyForProvider(authStorage: AuthStorage, provider: string): Promise<string> {
+	const key = await authStorage.getApiKey(provider);
 	if (!key) {
 		throw new Error(
-			"No API key found for anthropic.\n\n" +
-				"Set an API key environment variable, or use /login with Anthropic and link to auth.json from " +
+			`No API key found for ${provider}.\n\n` +
+				"Set an API key environment variable, or use /login and link to auth.json from " +
 				join(homedir(), ".pi", "mom", "auth.json"),
 		);
 	}
@@ -431,16 +432,23 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 	const authStorage = AuthStorage.create(join(homedir(), ".pi", "mom", "auth.json"));
 	const modelRegistry = new ModelRegistry(authStorage);
 
+	// Resolve model from settings, falling back to defaults
+	const provider = settingsManager.getDefaultProvider() || DEFAULT_PROVIDER;
+	const modelId = settingsManager.getDefaultModel() || DEFAULT_MODEL;
+	const thinkingLevel = settingsManager.getDefaultThinkingLevel() || DEFAULT_THINKING_LEVEL;
+	const model = getModel(provider as any, modelId as any);
+	log.logInfo(`[${channelId}] Using model: ${provider}/${modelId} (thinking: ${thinkingLevel})`);
+
 	// Create agent
 	const agent = new Agent({
 		initialState: {
 			systemPrompt,
 			model,
-			thinkingLevel: "off",
+			thinkingLevel,
 			tools,
 		},
 		convertToLlm,
-		getApiKey: async () => getAnthropicApiKey(authStorage),
+		getApiKey: async (p: string) => getApiKeyForProvider(authStorage, p),
 	});
 
 	// Load existing messages
