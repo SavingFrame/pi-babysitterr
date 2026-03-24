@@ -537,20 +537,6 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 				log.logToolSuccess(logCtx, agentEvent.toolName, durationMs, resultStr);
 			}
 
-			// Post args + result to thread
-			const label = pending?.args ? (pending.args as { label?: string }).label : undefined;
-			const argsFormatted = pending
-				? formatToolArgsForSlack(agentEvent.toolName, pending.args as Record<string, unknown>)
-				: "(args not found)";
-			const duration = (durationMs / 1000).toFixed(1);
-			let threadMessage = `*${agentEvent.isError ? "✗" : "✓"} ${agentEvent.toolName}*`;
-			if (label) threadMessage += `: ${label}`;
-			threadMessage += ` (${duration}s)\n`;
-			if (argsFormatted) threadMessage += `\`\`\`\n${argsFormatted}\n\`\`\`\n`;
-			threadMessage += `*Result:*\n\`\`\`\n${resultStr}\n\`\`\``;
-
-			queue.enqueueMessage(threadMessage, "thread", "tool result thread", false);
-
 			if (agentEvent.isError) {
 				queue.enqueue(() => ctx.respond(`_Error: ${truncate(resultStr, 200)}_`, false), "tool error");
 			}
@@ -599,13 +585,11 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 				for (const thinking of thinkingParts) {
 					log.logThinking(logCtx, thinking);
 					queue.enqueueMessage(`_${thinking}_`, "main", "thinking main");
-					queue.enqueueMessage(`_${thinking}_`, "thread", "thinking thread", false);
 				}
 
 				if (text.trim()) {
 					log.logResponse(logCtx, text);
 					queue.enqueueMessage(text, "main", "response main");
-					queue.enqueueMessage(text, "thread", "response thread", false);
 				}
 			}
 		} else if (event.type === "auto_compaction_start") {
@@ -850,8 +834,8 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 					: 0;
 				const contextWindow = model.contextWindow || 200000;
 
-				const summary = log.logUsageSummary(runState.logCtx!, runState.totalUsage, contextTokens, contextWindow);
-				runState.queue.enqueue(() => ctx.respondInThread(summary), "usage summary");
+				// Log usage summary to file only, don't post to Slack
+				log.logUsageSummary(runState.logCtx!, runState.totalUsage, contextTokens, contextWindow);
 				await queueChain;
 			}
 

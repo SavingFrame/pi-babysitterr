@@ -119,6 +119,9 @@ function createSlackContext(event: SlackEvent, slack: SlackBot, state: ChannelSt
 	const workingIndicator = " ...";
 	let updatePromise = Promise.resolve();
 
+	// If mentioned in a thread, reply in that thread
+	const replyThreadTs = event.threadTs || undefined;
+
 	const user = slack.getUser(event.user);
 
 	// Extract event filename for status message
@@ -156,6 +159,8 @@ function createSlackContext(event: SlackEvent, slack: SlackBot, state: ChannelSt
 
 					if (messageTs) {
 						await slack.updateMessage(event.channel, messageTs, displayText);
+					} else if (replyThreadTs) {
+						messageTs = await slack.postInThread(event.channel, replyThreadTs, displayText);
 					} else {
 						messageTs = await slack.postMessage(event.channel, displayText);
 					}
@@ -186,6 +191,8 @@ function createSlackContext(event: SlackEvent, slack: SlackBot, state: ChannelSt
 
 					if (messageTs) {
 						await slack.updateMessage(event.channel, messageTs, displayText);
+					} else if (replyThreadTs) {
+						messageTs = await slack.postInThread(event.channel, replyThreadTs, displayText);
 					} else {
 						messageTs = await slack.postMessage(event.channel, displayText);
 					}
@@ -223,7 +230,11 @@ function createSlackContext(event: SlackEvent, slack: SlackBot, state: ChannelSt
 					try {
 						if (!messageTs) {
 							accumulatedText = eventFilename ? `_Starting event: ${eventFilename}_` : "_Thinking_";
-							messageTs = await slack.postMessage(event.channel, accumulatedText + workingIndicator);
+							if (replyThreadTs) {
+								messageTs = await slack.postInThread(event.channel, replyThreadTs, accumulatedText + workingIndicator);
+							} else {
+								messageTs = await slack.postMessage(event.channel, accumulatedText + workingIndicator);
+							}
 						}
 					} catch (err) {
 						log.logWarning("Slack setTyping error", err instanceof Error ? err.message : String(err));
