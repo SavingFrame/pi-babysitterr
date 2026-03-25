@@ -6,7 +6,6 @@ import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
 import * as log from "./log.js";
 import { handlePackageCommand } from "./packages.js";
-import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { type MomHandler, type SlackBot, SlackBot as SlackBotClass, type SlackEvent } from "./slack.js";
 import { ChannelStore } from "./store.js";
 
@@ -19,22 +18,22 @@ const BABYSITTER_SLACK_BOT_TOKEN = process.env.BABYSITTER_SLACK_BOT_TOKEN;
 
 interface ParsedArgs {
 	workingDir?: string;
-	sandbox: SandboxConfig;
 	downloadChannel?: string;
 }
 
 function parseArgs(): ParsedArgs {
 	const args = process.argv.slice(2);
-	let sandbox: SandboxConfig = { type: "host" };
 	let workingDir: string | undefined;
 	let downloadChannelId: string | undefined;
 
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i];
 		if (arg.startsWith("--sandbox=")) {
-			sandbox = parseSandboxArg(arg.slice("--sandbox=".length));
+			console.error("Error: --sandbox is no longer supported. Run babysitter itself inside your container.");
+			process.exit(1);
 		} else if (arg === "--sandbox") {
-			sandbox = parseSandboxArg(args[++i] || "");
+			console.error("Error: --sandbox is no longer supported. Run babysitter itself inside your container.");
+			process.exit(1);
 		} else if (arg.startsWith("--download=")) {
 			downloadChannelId = arg.slice("--download=".length);
 		} else if (arg === "--download") {
@@ -46,7 +45,6 @@ function parseArgs(): ParsedArgs {
 
 	return {
 		workingDir: workingDir ? resolve(workingDir) : undefined,
-		sandbox,
 		downloadChannel: downloadChannelId,
 	};
 }
@@ -73,19 +71,17 @@ if (firstArg && packageCommands.includes(firstArg)) {
 
 // Normal bot mode - require working dir
 if (!parsedArgs.workingDir) {
-	console.error("Usage: babysitter [--sandbox=host|docker:<name>] <working-directory>");
+	console.error("Usage: babysitter <working-directory>");
 	console.error("       babysitter --download <channel-id>");
 	process.exit(1);
 }
 
-const { workingDir, sandbox } = { workingDir: parsedArgs.workingDir, sandbox: parsedArgs.sandbox };
+const { workingDir } = parsedArgs;
 
 if (!BABYSITTER_SLACK_APP_TOKEN || !BABYSITTER_SLACK_BOT_TOKEN) {
 	console.error("Missing env: BABYSITTER_SLACK_APP_TOKEN, BABYSITTER_SLACK_BOT_TOKEN");
 	process.exit(1);
 }
-
-await validateSandbox(sandbox);
 
 // ============================================================================
 // State (per channel)
@@ -107,7 +103,7 @@ function getState(channelId: string): ChannelState {
 		const channelDir = join(workingDir, channelId);
 		state = {
 			running: false,
-			runner: getOrCreateRunner(sandbox, channelId, channelDir),
+			runner: getOrCreateRunner(channelId, channelDir),
 			store: new ChannelStore({ workingDir, botToken: BABYSITTER_SLACK_BOT_TOKEN! }),
 			stopRequested: false,
 		};
@@ -240,7 +236,11 @@ function createSlackContext(event: SlackEvent, slack: SlackBot, state: ChannelSt
 						if (!messageTs) {
 							accumulatedText = eventFilename ? `_Starting event: ${eventFilename}_` : "_Thinking_";
 							if (replyThreadTs) {
-								messageTs = await slack.postInThread(event.channel, replyThreadTs, accumulatedText + workingIndicator);
+								messageTs = await slack.postInThread(
+									event.channel,
+									replyThreadTs,
+									accumulatedText + workingIndicator,
+								);
 							} else {
 								messageTs = await slack.postMessage(event.channel, accumulatedText + workingIndicator);
 							}
@@ -355,7 +355,7 @@ const handler: MomHandler = {
 // Start
 // ============================================================================
 
-log.logStartup(workingDir, sandbox.type === "host" ? "host" : `docker:${sandbox.container}`);
+log.logStartup(workingDir);
 
 // Shared store for attachment downloads (also used per-channel in getState)
 const sharedStore = new ChannelStore({ workingDir, botToken: BABYSITTER_SLACK_BOT_TOKEN! });

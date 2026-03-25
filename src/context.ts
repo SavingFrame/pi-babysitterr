@@ -155,7 +155,7 @@ class WorkspaceSettingsStorage implements MomSettingsStorage {
 		this.settingsPath = join(workspaceDir, ".pi", "settings.json");
 	}
 
-	withLock(scope: "global" | "project", fn: (current: string | undefined) => string | undefined): void {
+	withLock(_scope: "global" | "project", fn: (current: string | undefined) => string | undefined): void {
 		// Both scopes map to the same file — babysitter has no global/user distinction.
 		const current = existsSync(this.settingsPath) ? readFileSync(this.settingsPath, "utf-8") : undefined;
 		const next = fn(current);

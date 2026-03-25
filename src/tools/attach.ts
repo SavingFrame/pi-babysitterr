@@ -1,6 +1,6 @@
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { Type } from "@sinclair/typebox";
-import { basename, resolve as resolvePath } from "path";
+import { basename } from "path";
 
 // This will be set by the agent before running
 let uploadFn: ((filePath: string, title?: string) => Promise<void>) | null = null;
@@ -19,7 +19,7 @@ export const attachTool: AgentTool<typeof attachSchema> = {
 	name: "attach",
 	label: "attach",
 	description:
-		"Attach a file to your response. Use this to share files, images, or documents with the user. Only files from /workspace/ can be attached.",
+		"Attach a file to your response. Use this to share files, images, or documents with the user. Only files from the current workspace should be attached.",
 	parameters: attachSchema,
 	execute: async (
 		_toolCallId: string,
@@ -34,10 +34,9 @@ export const attachTool: AgentTool<typeof attachSchema> = {
 			throw new Error("Operation aborted");
 		}
 
-		const absolutePath = resolvePath(path);
-		const fileName = title || basename(absolutePath);
+		const fileName = title || basename(path);
 
-		await uploadFn(absolutePath, fileName);
+		await uploadFn(path, fileName);
 
 		return {
 			content: [{ type: "text" as const, text: `Attached file: ${fileName}` }],

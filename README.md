@@ -18,7 +18,7 @@ This fork adds:
 - **Self-Managing**: Installs tools (apk, npm, etc.), writes scripts, configures credentials. Zero setup from you
 - **Slack Integration**: Responds to @mentions in channels and DMs
 - **Full Bash Access**: Execute any command, read/write files, automate workflows
-- **Docker Sandbox**: Isolate babysitter in a container (recommended for all use)
+- **Container-First Deployment**: Run babysitter inside your own Docker container or similar runtime
 - **Persistent Workspace**: All conversation history, files, and tools stored in one directory you control
 - **Working Memory & Custom Tools**: Remembers context across sessions and creates workflow-specific CLI tools ([aka "skills"](https://mariozechner.at/posts/2025-11-02-what-if-you-dont-need-mcp/)) for your tasks
 - **Thread-Based Details**: Clean main messages with verbose tool details in threads
@@ -29,7 +29,6 @@ This fork adds:
 
 - [Artifacts Server](docs/artifacts-server.md) - Share HTML/JS visualizations publicly with live reload
 - [Events System](docs/events.md) - Schedule reminders and periodic tasks
-- [Sandbox Guide](docs/sandbox.md) - Docker vs host mode security
 - [Slack Bot Setup](docs/slack-bot-minimal-guide.md) - Minimal Slack integration guide
 
 ## Installation
@@ -70,6 +69,8 @@ npm install babysitter
 
 ## Quick Start
 
+Run babysitter inside the same container where you want commands and tools to execute.
+
 ```bash
 # Set environment variables
 export BABYSITTER_SLACK_APP_TOKEN=xapp-...
@@ -78,15 +79,8 @@ export BABYSITTER_SLACK_BOT_TOKEN=xoxb-...
 export ANTHROPIC_API_KEY=sk-ant-...
 # Option 2: use /login command in pi agent, then copy/link auth.json to ~/.pi/mom/
 
-# Create Docker sandbox (recommended)
-docker run -d \
-  --name babysitter-sandbox \
-  -v $(pwd)/data:/workspace \
-  alpine:latest \
-  tail -f /dev/null
-
-# Run babysitter in Docker mode
-babysitter --sandbox=docker:babysitter-sandbox ./data
+# Start babysitter from inside your container
+babysitter ./data
 
 # Babysitter will install any tools she needs herself (git, jq, etc.)
 ```
@@ -94,11 +88,7 @@ babysitter --sandbox=docker:babysitter-sandbox ./data
 ## CLI Options
 
 ```bash
-babysitter [options] <working-directory>
-
-Options:
-  --sandbox=host              Run tools on host (not recommended)
-  --sandbox=docker:<name>     Run tools in Docker container (recommended)
+babysitter <working-directory>
 ```
 
 ### Package Commands
@@ -186,10 +176,13 @@ You can also place extensions and skills directly in the workspace:
 
 ```
 <workspace>/
+├── projects/              # git repositories babysitter should inspect
 ├── .pi/
 │   ├── settings.json      # all settings (model, packages, etc.)
 │   ├── extensions/        # hand-written extensions (auto-loaded)
 │   ├── skills/            # hand-written shared skills
+│   ├── babysitter/
+│   │   └── skills/        # built-in babysitter skills
 │   ├── npm/               # installed npm packages
 │   └── git/               # installed git packages
 └── <channel>/
@@ -198,11 +191,28 @@ You can also place extensions and skills directly in the workspace:
 
 Extensions and skills from installed packages, `.pi/extensions/`, and `.pi/skills/` are all loaded automatically. Channel-specific skills in `<channel>/skills/` override shared skills.
 
+### Project repositories
+
+Put repositories you want babysitter to answer questions about under `<workspace>/projects/`.
+
+Babysitter ships with a built-in `project-sync` skill that can:
+- list repos under `/workspace/projects`
+- safely sync one repo before analysis
+- fast-forward clean tracked repos
+- fall back to fetch-only for dirty repos so local work is not disturbed
+
+Recommended flow for repo questions:
+1. babysitter identifies the matching repo under `projects/`
+2. she uses the `project-sync` skill
+3. then she reads files or runs deeper analysis
+
+If you want to enforce repo-selection conventions, add a workspace-level `AGENTS.md` next to `projects/`.
+
 For extension authoring details, see the [pi extension docs](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/extensions.md) and [examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions).
 
 ## How Babysitter Works
 
-Babysitter is a Node.js app that runs on your host machine. She connects to Slack via Socket Mode, receives messages, and responds using an LLM-based agent that can create and use tools.
+Babysitter is a Node.js app that runs in your deployed runtime (typically a Docker container). She connects to Slack via Socket Mode, receives messages, and responds using an LLM-based agent that can create and use tools.
 
 **For each channel you add babysitter to** (group channels or DMs), babysitter maintains a separate conversation history with its own context, memory, and files.
 
@@ -227,7 +237,7 @@ Babysitter is a Node.js app that runs on your host machine. She connects to Slac
 - When the context exceeds the LLM's context window size, babysitter compacts the context: keeps recent messages and tool results in full, summarizes older ones
 - For older history beyond context, babysitter can grep `log.jsonl` for infinite searchable history
 
-Everything babysitter does happens in a workspace you control. This is a single directory that's the only directory she can access on your host machine (when in Docker mode). You can inspect logs, memory, and tools she creates anytime.
+Everything babysitter does happens in a workspace you control. In the recommended setup, you mount that workspace into the container running babysitter. You can inspect logs, memory, and tools she creates anytime.
 
 ### Tools
 
@@ -240,22 +250,18 @@ Babysitter has access to these tools:
 
 ### Bash Execution Environment
 
-Babysitter uses the `bash` tool to do most of her work. It can run in one of two environments:
+Babysitter uses the `bash` tool to do most of her work. Commands execute directly in the same environment where babysitter is running.
 
-**Docker environment (recommended)**:
-- Commands execute inside an isolated Linux container
-- Babysitter can only access the mounted data directory from your host, plus anything inside the container
-- She installs tools inside the container and knows apk, apt, yum, etc.
-- Your host system is protected
+Recommended setup:
+- run babysitter inside a Docker container or similar isolated runtime
+- mount your workspace into that container
+- let babysitter install tools inside that container
 
-**Host environment**:
-- Commands execute directly on your machine
-- Babysitter has full access to your system
-- Not recommended. See security section below
+This keeps the runtime isolated while still giving babysitter full control over her own environment.
 
 ### Self-Managing Environment
 
-Inside her execution environment (Docker container or host), babysitter has full control:
+Inside that runtime, babysitter has full control:
 - **Installs tools**: `apk add git jq curl` (Linux) or `brew install` (macOS)
 - **Configures tool credentials**: Asks you for tokens/keys and stores them inside the container or data directory, depending on the tool's needs
 - **Persistent**: Everything she installs stays between sessions. If you remove the container, anything not in the data directory is lost
@@ -264,15 +270,18 @@ You never need to manually install dependencies. Just ask babysitter and she'll 
 
 ### The Data Directory
 
-You provide babysitter with a **data directory** (e.g., `./data`) as her workspace. While babysitter can technically access any directory in her execution environment, she's instructed to store all her work here:
+You provide babysitter with a **data directory** (e.g., `./data`) as her workspace. While babysitter can technically access any directory available inside her runtime, she's instructed to store all her work here:
 
 ```
 ./data/                         # Your host directory
   ├── MEMORY.md                 # Global memory (shared across channels)
+  ├── projects/                 # Git repositories babysitter should inspect
   ├── .pi/
   │   ├── settings.json         # All settings (model, packages, etc.)
   │   ├── extensions/           # Hand-written extensions (auto-loaded)
   │   ├── skills/               # Hand-written shared skills
+  │   ├── babysitter/
+  │   │   └── skills/           # Built-in babysitter skills
   │   ├── npm/                  # Installed npm packages
   │   └── git/                  # Installed git packages
   ├── C123ABC/                  # Each Slack channel gets a directory
@@ -288,10 +297,12 @@ You provide babysitter with a **data directory** (e.g., `./data`) as her workspa
 
 **What's stored here:**
 - `.pi/settings.json`: All settings (model config, installed packages)
+- `projects/`: Repositories babysitter can inspect and sync
 - `log.jsonl`: All channel messages (user messages, bot responses). Source of truth.
 - `context.jsonl`: Messages sent to the LLM. Synced from log.jsonl at each run start.
 - Memory files: Context babysitter remembers across sessions
 - Custom tools/scripts babysitter creates (aka "skills")
+- Built-in babysitter skills (materialized under `.pi/babysitter/skills/`)
 - Installed extensions and packages (in `.pi/npm/` and `.pi/git/`)
 - Working files, cloned repos, generated output
 
@@ -312,7 +323,8 @@ Memory files typically contain email writing tone preferences, coding convention
 Babysitter can install and use standard CLI tools (like GitHub CLI, npm packages, etc.). Babysitter can also write custom tools for your specific needs, which are called skills.
 
 Skills are stored in:
-- `/workspace/skills/`: Global tools available everywhere
+- `/workspace/.pi/skills/`: Shared workspace skills
+- `/workspace/.pi/babysitter/skills/`: Built-in babysitter skills
 - `/workspace/<channel>/skills/`: Channel-specific tools
 
 Each skill has a `SKILL.md` file with frontmatter and detailed usage instructions, plus any scripts or programs babysitter needs to use the skill. The frontmatter defines the skill's name and a brief description:
@@ -327,9 +339,9 @@ description: Read, search, and send Gmail via IMAP/SMTP
 ...
 ```
 
-When babysitter responds, she's given the names, descriptions, and file locations of all `SKILL.md` files in `/workspace/skills/` and `/workspace/<channel>/skills/`, so she knows what's available to handle your request. When babysitter decides to use a skill, she reads the `SKILL.md` in full, after which she's able to use the skill by invoking its scripts and programs.
+When babysitter responds, she's given the names, descriptions, and file locations of all `SKILL.md` files in `/workspace/.pi/skills/`, `/workspace/.pi/babysitter/skills/`, and `/workspace/<channel>/skills/`, so she knows what's available to handle your request. When babysitter decides to use a skill, she reads the `SKILL.md` in full, after which she's able to use the skill by invoking its scripts and programs.
 
-You can find a set of basic skills at [github.com/badlogic/pi-skills](https://github.com/badlogic/pi-skills). Just tell babysitter to clone this repository into `/workspace/skills/pi-skills` and she'll help you set up the rest.
+You can find a set of basic skills at [github.com/badlogic/pi-skills](https://github.com/badlogic/pi-skills). Just tell babysitter to clone this repository into `/workspace/.pi/skills/pi-skills` and she'll help you set up the rest.
 
 #### Creating a Skill
 
@@ -337,7 +349,7 @@ You can ask babysitter to create skills for you. For example:
 
 > "Create a skill that lets me manage a simple notes file. I should be able to add notes, read all notes, and clear them."
 
-Babysitter would create something like `/workspace/skills/note/SKILL.md`:
+Babysitter would create something like `/workspace/.pi/skills/note/SKILL.md`:
 
 ```markdown
 ---
@@ -377,7 +389,7 @@ bash {baseDir}/note.sh clear
 \`\`\`
 ```
 
-And `/workspace/skills/note/note.sh`:
+And `/workspace/.pi/skills/note/note.sh`:
 
 ```bash
 #!/bin/bash
@@ -445,7 +457,7 @@ Babysitter can schedule events that wake her up at specific times or when extern
 - The harness runs in the host's timezone. Babysitter is told this timezone in her system prompt
 
 **Creating events yourself:**
-You can write event files directly to `data/events/` on the host machine. This lets external systems (cron jobs, webhooks, CI pipelines) wake babysitter up without going through Slack. Just write a JSON file and babysitter will be triggered.
+You can write event files directly to `data/events/` from outside babysitter as well. This lets external systems (cron jobs, webhooks, CI pipelines) wake babysitter up without going through Slack. Just write a JSON file and babysitter will be triggered.
 
 **Limits:**
 - Maximum 5 events can be queued per channel
@@ -499,7 +511,7 @@ Babysitter executes the hidden command and sends your SSH key to the attacker.
 - API keys (GitHub, Groq, Gmail app passwords, etc.)
 - Tokens stored by installed tools (gh CLI, git credentials)
 - Files in the data directory
-- SSH keys (in host mode)
+- SSH keys or other credentials available inside the runtime
 
 **Mitigations:**
 - Use dedicated bot accounts with minimal permissions. Use read-only tokens when possible
@@ -508,22 +520,16 @@ Babysitter executes the hidden command and sends your SSH key to the attacker.
 - Monitor activity. Check tool calls and results in threads
 - Audit the data directory regularly. Know what credentials babysitter has access to
 
-### Docker vs Host Mode
+### Runtime Isolation
 
-**Docker mode** (recommended):
-- Limits babysitter to the container. She can only access the mounted data directory from your host
-- Credentials are isolated to the container
-- Malicious commands can't damage your host system
-- Still vulnerable to credential exfiltration. Anything inside the container can be accessed
-
-**Host mode** (not recommended):
-- Babysitter has full access to your machine with your user permissions
-- Can access SSH keys, config files, anything on your system
-- Destructive commands can damage your files: `rm -rf ~/Documents`
-- Only use in disposable VMs or if you fully understand the risks
+**Recommended setup:**
+- Run babysitter inside a dedicated container
+- Mount only the workspace and secrets she actually needs
+- Keep credentials isolated to that container/runtime
+- Remember that anything inside the runtime can still be read or exfiltrated by malicious prompts or tools
 
 **Mitigation:**
-- Always use Docker mode unless you're in a disposable environment
+- Use a dedicated container or VM for each trust boundary
 
 ### Access Control
 
@@ -536,10 +542,10 @@ Babysitter executes the hidden command and sends your SSH key to the attacker.
 Example setup:
 ```bash
 # General team babysitter (limited access)
-babysitter --sandbox=docker:mom-general ./data-general
+babysitter ./data-general
 
 # Executive team babysitter (full access)
-babysitter --sandbox=docker:mom-exec ./data-exec
+babysitter ./data-exec
 ```
 
 **Mitigations:**
@@ -549,7 +555,7 @@ babysitter --sandbox=docker:mom-exec ./data-exec
 
 ---
 
-**Remember**: Docker protects your host, but NOT credentials inside the container. Treat babysitter like you would treat a junior developer with full terminal access.
+**Remember**: Container isolation helps protect the host, but NOT credentials inside the runtime. Treat babysitter like you would treat a junior developer with full terminal access.
 
 ## Development
 
@@ -561,7 +567,7 @@ babysitter --sandbox=docker:mom-exec ./data-exec
 - `src/context.ts`: Session manager (context.jsonl), log-to-context sync
 - `src/store.ts`: Channel data persistence, attachment downloads
 - `src/log.ts`: Centralized logging (console output)
-- `src/sandbox.ts`: Docker/host sandbox execution
+- `src/executor.ts`: Local command execution inside babysitter's runtime
 - `src/tools/`: Tool implementations (bash, read, write, edit, attach)
 
 ### Running in Dev Mode
@@ -574,7 +580,7 @@ npm run dev
 Terminal 2 (babysitter, with auto-restart):
 ```bash
 cd packages/babysitter
-npx tsx --watch-path src --watch src/main.ts --sandbox=docker:babysitter-sandbox ./data
+npx tsx --watch-path src --watch src/main.ts ./data
 ```
 
 ## License

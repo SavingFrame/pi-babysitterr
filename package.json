@@ -25,7 +25,6 @@
 		"prepublishOnly": "npm run clean && npm run build"
 	},
 	"dependencies": {
-		"@anthropic-ai/sandbox-runtime": "^0.0.16",
 		"@mariozechner/pi-agent-core": "^0.62.0",
 		"@mariozechner/pi-ai": "^0.62.0",
 		"@mariozechner/pi-coding-agent": "^0.62.0",

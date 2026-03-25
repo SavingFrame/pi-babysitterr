@@ -4,11 +4,11 @@ import { AgentSession, AuthStorage, convertToLlm, ModelRegistry, SessionManager 
 import { existsSync, readFileSync } from "fs";
 import { mkdir, writeFile } from "fs/promises";
 import { homedir } from "os";
-import { join } from "path";
+import { join, resolve } from "path";
 import { createMomSettingsManager, syncLogToSessionManager } from "./context.js";
+import { createExecutor } from "./executor.js";
 import * as log from "./log.js";
 import { createBabysitterResourceLoader, type DynamicContext, getMemory } from "./resources.js";
-import { createExecutor, type SandboxConfig } from "./sandbox.js";
 import type { SlackContext } from "./slack.js";
 import type { ChannelStore } from "./store.js";
 import { createMomTools, setUploadFunction } from "./tools/index.js";
@@ -88,7 +88,7 @@ function extractToolResultText(result: unknown): string {
 	return JSON.stringify(result);
 }
 
-function formatToolArgsForSlack(_toolName: string, args: Record<string, unknown>): string {
+function _formatToolArgsForSlack(_toolName: string, args: Record<string, unknown>): string {
 	const lines: string[] = [];
 
 	for (const [key, value] of Object.entries(args)) {
@@ -124,11 +124,11 @@ const channelRunners = new Map<string, AgentRunner>();
  * Get or create an AgentRunner for a channel.
  * Runners are cached - one per channel, persistent across messages.
  */
-export function getOrCreateRunner(sandboxConfig: SandboxConfig, channelId: string, channelDir: string): AgentRunner {
+export function getOrCreateRunner(channelId: string, channelDir: string): AgentRunner {
 	const existing = channelRunners.get(channelId);
 	if (existing) return existing;
 
-	const runner = createRunner(sandboxConfig, channelId, channelDir);
+	const runner = createRunner(channelId, channelDir);
 	channelRunners.set(channelId, runner);
 	return runner;
 }
@@ -137,9 +137,9 @@ export function getOrCreateRunner(sandboxConfig: SandboxConfig, channelId: strin
  * Create a new AgentRunner for a channel.
  * Sets up the session and subscribes to events once.
  */
-function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDir: string): AgentRunner {
-	const executor = createExecutor(sandboxConfig);
-	const workspacePath = executor.getWorkspacePath(channelDir.replace(`/${channelId}`, ""));
+function createRunner(channelId: string, channelDir: string): AgentRunner {
+	const workspacePath = resolve(join(channelDir, ".."));
+	const executor = createExecutor(workspacePath);
 
 	// Create tools
 	const tools = createMomTools(executor);
@@ -170,10 +170,7 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 	};
 
 	// Create resource loader with Babysitter-specific discovery
-	const resourceLoader = createBabysitterResourceLoader(
-		{ channelDir, workspacePath, channelId, sandboxConfig },
-		dynamicCtx,
-	);
+	const resourceLoader = createBabysitterResourceLoader({ channelDir, workspacePath, channelId }, dynamicCtx);
 
 	// Initial system prompt from resource loader (before first reload)
 	const systemPrompt = resourceLoader.getSystemPrompt() || "";
@@ -204,7 +201,7 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 		agent,
 		sessionManager,
 		settingsManager,
-		cwd: process.cwd(),
+		cwd: workspacePath,
 		modelRegistry,
 		resourceLoader,
 		baseToolsOverride,
@@ -430,8 +427,7 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 
 			// Set up file upload function
 			setUploadFunction(async (filePath: string, title?: string) => {
-				const hostPath = translateToHostPath(filePath, channelDir, workspacePath, channelId);
-				await ctx.uploadFile(hostPath, title);
+				await ctx.uploadFile(resolve(workspacePath, filePath), title);
 			});
 
 			// Reset per-run state
@@ -503,7 +499,7 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 			const nonImagePaths: string[] = [];
 
 			for (const a of ctx.message.attachments || []) {
-				const fullPath = `${workspacePath}/${a.local}`;
+				const fullPath = join(workspacePath, a.local);
 				const mimeType = getImageMimeType(a.local);
 
 				if (mimeType && existsSync(fullPath)) {
@@ -617,25 +613,4 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 			session.abort();
 		},
 	};
-}
-
-/**
- * Translate container path back to host path for file operations
- */
-function translateToHostPath(
-	containerPath: string,
-	channelDir: string,
-	workspacePath: string,
-	channelId: string,
-): string {
-	if (workspacePath === "/workspace") {
-		const prefix = `/workspace/${channelId}/`;
-		if (containerPath.startsWith(prefix)) {
-			return join(channelDir, containerPath.slice(prefix.length));
-		}
-		if (containerPath.startsWith("/workspace/")) {
-			return join(channelDir, "..", containerPath.slice("/workspace/".length));
-		}
-	}
-	return containerPath;
 }

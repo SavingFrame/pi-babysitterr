@@ -2,21 +2,17 @@
  * Babysitter resource loader: wraps pi's DefaultResourceLoader with
  * Babysitter-specific extension/skill discovery and a Slack system prompt.
  *
- * - Extensions: data/extensions/ (workspace-level only)
- * - Skills: data/skills/ (workspace) + data/<channel>/skills/ (channel, overrides workspace)
+ * - Extensions: <workspace>/.pi/extensions/ (workspace-level)
+ * - Skills: <workspace>/.pi/skills/ + built-in skills materialized into <workspace>/.pi/babysitter/skills/
+ *   plus <workspace>/<channel>/skills/ (channel-local, overrides workspace)
  * - System prompt: Slack-specific prompt built from mutable per-run context
  */
 
-import {
-	DefaultResourceLoader,
-	type Skill,
-	SettingsManager,
-} from "@mariozechner/pi-coding-agent";
-import { existsSync, readFileSync, readdirSync } from "fs";
-import { join, resolve } from "path";
+import { DefaultResourceLoader } from "@mariozechner/pi-coding-agent";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "fs";
+import { dirname, join, resolve } from "path";
 import { createMomSettingsManager } from "./context.js";
 import * as log from "./log.js";
-import type { SandboxConfig } from "./sandbox.js";
 import type { ChannelInfo, UserInfo } from "./slack.js";
 
 /** Mutable per-run context that changes with each Slack message */
@@ -27,14 +23,12 @@ export interface DynamicContext {
 }
 
 export interface BabysitterResourceLoaderOptions {
-	/** Host-side channel directory (e.g. data/D0ANE5J8BL3) */
+	/** Workspace-side channel directory (e.g. data/D0ANE5J8BL3) */
 	channelDir: string;
-	/** Sandbox workspace path the agent sees (e.g. /workspace) */
+	/** Workspace path the agent sees */
 	workspacePath: string;
 	/** Channel ID */
 	channelId: string;
-	/** Sandbox configuration */
-	sandboxConfig: SandboxConfig;
 }
 
 /**
@@ -46,7 +40,7 @@ export interface BabysitterResourceLoaderOptions {
  * - Installed package resources (from .pi/settings.json via pi's package manager)
  * - Channel-specific skills
  *
- * The loader's cwd is set to the host workspace directory so pi's package
+ * The loader's cwd is set to the workspace directory so pi's package
  * resolution finds .pi/settings.json, .pi/npm/, and .pi/git/ correctly.
  * agentDir is set to a workspace-local dummy to prevent global ~/.pi/agent discovery.
  */
@@ -54,13 +48,13 @@ export function createBabysitterResourceLoader(
 	options: BabysitterResourceLoaderOptions,
 	dynamicCtx: DynamicContext,
 ): DefaultResourceLoader {
-	const { channelDir, workspacePath, channelId, sandboxConfig } = options;
-	const hostWorkspaceDir = resolve(join(channelDir, ".."));
+	const { channelDir, workspacePath, channelId } = options;
+	const workspaceDir = resolve(join(channelDir, ".."));
 
 	// Built-in paths (shipped with babysitter, in git)
 	const builtinDir = join(import.meta.dirname, "..", "pi");
 	const builtinExtensionsDir = join(builtinDir, "extensions");
-	const builtinSkillsDir = join(builtinDir, "skills");
+	const builtinSkillsDir = materializeBuiltinSkills(join(builtinDir, "skills"), workspaceDir);
 
 	// Channel-specific skills (Babysitter-specific, not known to pi)
 	const channelSkillsDir = join(channelDir, "skills");
@@ -70,13 +64,13 @@ export function createBabysitterResourceLoader(
 
 	// Settings manager for this workspace — enables pi to read .pi/settings.json
 	// for package sources, provider/model config, etc.
-	const settingsManager = createMomSettingsManager(hostWorkspaceDir);
+	const settingsManager = createMomSettingsManager(workspaceDir);
 
 	const loader = new DefaultResourceLoader({
 		// Real workspace dir so pi resolves .pi/settings.json, .pi/npm/, .pi/git/
-		cwd: hostWorkspaceDir,
+		cwd: workspaceDir,
 		// Workspace-local dummy agent dir — prevents global ~/.pi/agent discovery
-		agentDir: resolve(hostWorkspaceDir, ".pi", "agent"),
+		agentDir: resolve(workspaceDir, ".pi", "agent"),
 		// Provide settings so pi can find package sources
 		settingsManager,
 
@@ -96,22 +90,25 @@ export function createBabysitterResourceLoader(
 		// - installed package skills (from .pi/settings.json)
 		additionalSkillPaths: [builtinSkillsDir, channelSkillsDir],
 
-		// Translate skill paths from host to sandbox workspace paths
-		skillsOverride: (base) => {
-			const translated: Skill[] = base.skills.map((skill) => ({
-				...skill,
-				filePath: translateHostToWorkspace(skill.filePath, hostWorkspaceDir, workspacePath),
-				baseDir: translateHostToWorkspace(skill.baseDir, hostWorkspaceDir, workspacePath),
-			}));
-			return { skills: translated, diagnostics: base.diagnostics };
-		},
-
 		// Return the Slack-specific system prompt (without skills — pi appends them)
-		systemPromptOverride: () =>
-			buildSlackSystemPrompt(workspacePath, channelId, dynamicCtx, sandboxConfig),
+		systemPromptOverride: () => buildSlackSystemPrompt(workspacePath, channelId, dynamicCtx),
 	});
 
 	return loader;
+}
+
+/** Copy built-in skills into the workspace so tool scripts can read and execute them locally. */
+function materializeBuiltinSkills(sourceDir: string, workspaceDir: string): string {
+	const targetDir = join(workspaceDir, ".pi", "babysitter", "skills");
+
+	if (!existsSync(sourceDir)) {
+		return targetDir;
+	}
+
+	mkdirSync(dirname(targetDir), { recursive: true });
+	rmSync(targetDir, { recursive: true, force: true });
+	cpSync(sourceDir, targetDir, { recursive: true, force: true });
+	return targetDir;
 }
 
 /** Discover concrete extension entries inside an extensions/ directory. */
@@ -131,14 +128,6 @@ function discoverExtensionPaths(extensionsDir: string): string[] {
 	}
 
 	return paths;
-}
-
-/** Translate a host-side path to the sandbox workspace path the agent sees */
-function translateHostToWorkspace(hostPath: string, hostWorkspaceDir: string, workspacePath: string): string {
-	if (hostPath.startsWith(hostWorkspaceDir)) {
-		return workspacePath + hostPath.slice(hostWorkspaceDir.length);
-	}
-	return hostPath;
 }
 
 /** Read workspace and channel MEMORY.md files */
@@ -182,33 +171,22 @@ export function getMemory(channelDir: string): string {
  * NOTE: Skills are NOT included here — pi's buildSystemPrompt appends them
  * automatically when a customPrompt is returned from the resource loader.
  */
-function buildSlackSystemPrompt(
-	workspacePath: string,
-	channelId: string,
-	ctx: DynamicContext,
-	sandboxConfig: SandboxConfig,
-): string {
+function buildSlackSystemPrompt(workspacePath: string, channelId: string, ctx: DynamicContext): string {
 	const channelPath = `${workspacePath}/${channelId}`;
-	const isDocker = sandboxConfig.type === "docker";
 
 	const channelMappings =
-		ctx.channels.length > 0
-			? ctx.channels.map((c) => `${c.id}\t#${c.name}`).join("\n")
-			: "(no channels loaded)";
+		ctx.channels.length > 0 ? ctx.channels.map((c) => `${c.id}\t#${c.name}`).join("\n") : "(no channels loaded)";
 
 	const userMappings =
 		ctx.users.length > 0
 			? ctx.users.map((u) => `${u.id}\t@${u.userName}\t${u.displayName}`).join("\n")
 			: "(no users loaded)";
 
-	const envDescription = isDocker
-		? `You are running inside a Docker container (Alpine Linux).
-- Bash working directory: / (use cd or absolute paths)
-- Install tools with: apk add <package>
-- Your changes persist across sessions`
-		: `You are running directly on the host machine.
-- Bash working directory: ${process.cwd()}
-- Be careful with system modifications`;
+	const envDescription = `You are running in the same execution environment as babysitter.
+- Bash working directory: ${workspacePath}
+- Use absolute paths or cd as needed
+- Install tools with whatever package manager is available in this container or environment (for example: apk add, apt-get install, npm install)
+- Your changes persist across sessions while this workspace/container persists`;
 
 	return `You are mom, a Slack bot assistant. Be concise. No emojis.
 
@@ -234,8 +212,12 @@ ${envDescription}
 ## Workspace Layout
 ${workspacePath}/
 ├── MEMORY.md                    # Global memory (all channels)
-├── extensions/                  # Extensions (auto-loaded, host-side)
-├── skills/                      # Global skills
+├── projects/                    # Git repositories to inspect and sync
+├── .pi/
+│   ├── settings.json            # Model + package settings
+│   ├── extensions/              # Hand-written extensions
+│   ├── skills/                  # Hand-written shared skills
+│   └── babysitter/skills/       # Built-in babysitter skills
 └── ${channelId}/                # This channel
     ├── MEMORY.md                # Channel-specific memory
     ├── log.jsonl                # Message history (no tool results)
@@ -243,8 +225,18 @@ ${workspacePath}/
     ├── scratch/                 # Your working directory
     └── skills/                  # Channel-specific tools
 
+## Projects
+Put repositories you want to inspect under \`${workspacePath}/projects/\`.
+
+When a user asks about a repo in that directory:
+- first identify the matching repository
+- use the \`project-sync\` skill before reading files or answering
+- default to syncing only the relevant repo, not every repo
+- prefer safe sync behavior: clean tracked repos may fast-forward, dirty repos should stay unchanged and fall back to fetch-only
+- if a repo stays fetch-only, inspect the latest upstream state via git refs such as \`origin/main\`
+
 ## Extensions
-Create TypeScript files in \`${workspacePath}/extensions/\` to extend capabilities. Auto-loaded and hot-reloaded on each message. Extensions run on the host (not sandboxed).
+Create TypeScript files in \`${workspacePath}/.pi/extensions/\` to extend capabilities. Auto-loaded and hot-reloaded on each message. Extensions run in the same environment as babysitter.
 
 Documentation: https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/extensions.md
 Examples: https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions
@@ -330,7 +322,7 @@ Update this file whenever you modify the environment. On fresh container, read i
 ## Log Queries (for older history)
 Format: \`{"date":"...","ts":"...","user":"...","userName":"...","text":"...","isBot":false}\`
 The log contains user messages and your final responses (not tool calls/results).
-${isDocker ? "Install jq: apk add jq" : ""}
+If jq is missing, install it first.
 
 \`\`\`bash
 # Recent messages
