@@ -7,7 +7,7 @@
  *
  * This module provides:
  * - syncLogToSessionManager: Syncs messages from log.jsonl to SessionManager
- * - createMomSettingsManager: Creates a SettingsManager backed by workspace settings.json
+ * - createMomSettingsManager: Creates a SettingsManager backed by workspace .pi/settings.json
  */
 
 import type { UserMessage } from "@mariozechner/pi-ai";
@@ -151,16 +151,12 @@ class WorkspaceSettingsStorage implements MomSettingsStorage {
 	private settingsPath: string;
 
 	constructor(workspaceDir: string) {
-		this.settingsPath = join(workspaceDir, "settings.json");
+		// Single settings file for everything: packages, provider, model, etc.
+		this.settingsPath = join(workspaceDir, ".pi", "settings.json");
 	}
 
 	withLock(scope: "global" | "project", fn: (current: string | undefined) => string | undefined): void {
-		if (scope === "project") {
-			// Mom stores all settings in a single workspace file.
-			fn(undefined);
-			return;
-		}
-
+		// Both scopes map to the same file — babysitter has no global/user distinction.
 		const current = existsSync(this.settingsPath) ? readFileSync(this.settingsPath, "utf-8") : undefined;
 		const next = fn(current);
 		if (next === undefined) {

@@ -5,6 +5,7 @@ import { type AgentRunner, getOrCreateRunner } from "./agent.js";
 import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
 import * as log from "./log.js";
+import { handlePackageCommand } from "./packages.js";
 import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { type MomHandler, type SlackBot, SlackBot as SlackBotClass, type SlackEvent } from "./slack.js";
 import { ChannelStore } from "./store.js";
@@ -60,6 +61,14 @@ if (parsedArgs.downloadChannel) {
 	}
 	await downloadChannel(parsedArgs.downloadChannel, BABYSITTER_SLACK_BOT_TOKEN);
 	process.exit(0);
+}
+
+// Handle package commands: install, remove, update, list
+const packageCommands = ["install", "remove", "update", "list"];
+const firstArg = process.argv[2];
+if (firstArg && packageCommands.includes(firstArg)) {
+	const exitCode = await handlePackageCommand(firstArg, process.argv.slice(3));
+	process.exit(exitCode);
 }
 
 // Normal bot mode - require working dir

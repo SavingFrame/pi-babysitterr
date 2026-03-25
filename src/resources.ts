@@ -10,9 +10,11 @@
 import {
 	DefaultResourceLoader,
 	type Skill,
+	SettingsManager,
 } from "@mariozechner/pi-coding-agent";
 import { existsSync, readFileSync, readdirSync } from "fs";
-import { join } from "path";
+import { join, resolve } from "path";
+import { createMomSettingsManager } from "./context.js";
 import * as log from "./log.js";
 import type { SandboxConfig } from "./sandbox.js";
 import type { ChannelInfo, UserInfo } from "./slack.js";
@@ -38,46 +40,61 @@ export interface BabysitterResourceLoaderOptions {
 /**
  * Create a DefaultResourceLoader configured for Babysitter.
  *
- * Uses pi's real extension/skill loading with Babysitter-controlled paths only
- * (no ~/.pi/agent or cwd/.pi discovery).
+ * Uses pi's real extension/skill loading with:
+ * - Built-in babysitter resources (from pi/ directory)
+ * - Workspace-local hand-written resources (extensions/, skills/)
+ * - Installed package resources (from .pi/settings.json via pi's package manager)
+ * - Channel-specific skills
+ *
+ * The loader's cwd is set to the host workspace directory so pi's package
+ * resolution finds .pi/settings.json, .pi/npm/, and .pi/git/ correctly.
+ * agentDir is set to a workspace-local dummy to prevent global ~/.pi/agent discovery.
  */
 export function createBabysitterResourceLoader(
 	options: BabysitterResourceLoaderOptions,
 	dynamicCtx: DynamicContext,
 ): DefaultResourceLoader {
 	const { channelDir, workspacePath, channelId, sandboxConfig } = options;
-	const hostWorkspaceDir = join(channelDir, "..");
+	const hostWorkspaceDir = resolve(join(channelDir, ".."));
 
 	// Built-in paths (shipped with babysitter, in git)
 	const builtinDir = join(import.meta.dirname, "..", "pi");
 	const builtinExtensionsDir = join(builtinDir, "extensions");
 	const builtinSkillsDir = join(builtinDir, "skills");
 
-	// User paths (host-side workspace, in data/)
-	const extensionDir = join(hostWorkspaceDir, "extensions");
-	const workspaceSkillsDir = join(hostWorkspaceDir, "skills");
+	// Channel-specific skills (Babysitter-specific, not known to pi)
 	const channelSkillsDir = join(channelDir, "skills");
-	const extensionPaths = [
-		...discoverExtensionPaths(builtinExtensionsDir),
-		...discoverExtensionPaths(extensionDir),
-	];
+
+	// Built-in extensions need explicit discovery (they're outside the workspace)
+	const builtinExtensionPaths = discoverExtensionPaths(builtinExtensionsDir);
+
+	// Settings manager for this workspace — enables pi to read .pi/settings.json
+	// for package sources, provider/model config, etc.
+	const settingsManager = createMomSettingsManager(hostWorkspaceDir);
 
 	const loader = new DefaultResourceLoader({
-		// Use non-existent paths so pi's default discovery finds nothing
-		cwd: "/nonexistent-babysitter-cwd",
-		agentDir: "/nonexistent-babysitter-agentdir",
+		// Real workspace dir so pi resolves .pi/settings.json, .pi/npm/, .pi/git/
+		cwd: hostWorkspaceDir,
+		// Workspace-local dummy agent dir — prevents global ~/.pi/agent discovery
+		agentDir: resolve(hostWorkspaceDir, ".pi", "agent"),
+		// Provide settings so pi can find package sources
+		settingsManager,
 
-		// Disable default discovery, only use our additional paths
-		noExtensions: true,
-		noSkills: true,
+		// Disable prompt templates and themes (not used by babysitter)
 		noPromptTemplates: true,
 		noThemes: true,
 
-		// Built-in (git) + user (data/) paths
-		// DefaultResourceLoader expects concrete extension files/package dirs here,
-		// not a parent "extensions/" directory to scan.
-		additionalExtensionPaths: extensionPaths,
-		additionalSkillPaths: [builtinSkillsDir, workspaceSkillsDir, channelSkillsDir],
+		// Built-in extensions (outside workspace) added explicitly.
+		// pi's default discovery handles:
+		// - <workspace>/.pi/extensions/ (project-local hand-written)
+		// - installed package extensions (from .pi/settings.json)
+		additionalExtensionPaths: builtinExtensionPaths,
+
+		// Built-in skills + channel skills added explicitly.
+		// pi's default discovery handles:
+		// - <workspace>/.pi/skills/ (project-local hand-written)
+		// - installed package skills (from .pi/settings.json)
+		additionalSkillPaths: [builtinSkillsDir, channelSkillsDir],
 
 		// Translate skill paths from host to sandbox workspace paths
 		skillsOverride: (base) => {
