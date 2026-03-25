@@ -1,19 +1,13 @@
 import { Agent, type AgentEvent, type ThinkingLevel } from "@mariozechner/pi-agent-core";
 import { getModel, type ImageContent } from "@mariozechner/pi-ai";
-import {
-	AgentSession,
-	AuthStorage,
-	convertToLlm,
-	ModelRegistry,
-	SessionManager,
-} from "@mariozechner/pi-coding-agent";
+import { AgentSession, AuthStorage, convertToLlm, ModelRegistry, SessionManager } from "@mariozechner/pi-coding-agent";
 import { existsSync, readFileSync } from "fs";
 import { mkdir, writeFile } from "fs/promises";
 import { homedir } from "os";
 import { join } from "path";
 import { createMomSettingsManager, syncLogToSessionManager } from "./context.js";
 import * as log from "./log.js";
-import { createBabysitterResourceLoader, getMemory, type DynamicContext } from "./resources.js";
+import { createBabysitterResourceLoader, type DynamicContext, getMemory } from "./resources.js";
 import { createExecutor, type SandboxConfig } from "./sandbox.js";
 import type { SlackContext } from "./slack.js";
 import type { ChannelStore } from "./store.js";
@@ -62,9 +56,6 @@ const IMAGE_MIME_TYPES: Record<string, string> = {
 function getImageMimeType(filename: string): string | undefined {
 	return IMAGE_MIME_TYPES[filename.toLowerCase().split(".").pop() || ""];
 }
-
-
-
 
 function truncate(text: string, maxLen: number): string {
 	if (text.length <= maxLen) return text;
@@ -255,7 +246,8 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 			enqueue(fn: () => Promise<void>, errorContext: string): void;
 			enqueueMessage(text: string, target: "main" | "thread", errorContext: string, doLog?: boolean): void;
 		} | null,
-		pendingTools: new Map<string, { toolName: string; args: unknown; startTime: number }>(),
+		pendingTools: new Map<string, { toolName: string; args: unknown; startTime: number; summaryIndex: number }>(),
+		usedTools: [] as Array<{ toolName: string; label: string; durationMs?: number; isError?: boolean }>,
 		totalUsage: {
 			input: 0,
 			output: 0,
@@ -279,10 +271,16 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 			const args = agentEvent.args as { label?: string };
 			const label = args.label || agentEvent.toolName;
 
+			runState.usedTools.push({
+				toolName: agentEvent.toolName,
+				label,
+			});
+
 			pendingTools.set(agentEvent.toolCallId, {
 				toolName: agentEvent.toolName,
 				args: agentEvent.args,
 				startTime: Date.now(),
+				summaryIndex: runState.usedTools.length - 1,
 			});
 
 			log.logToolStart(logCtx, agentEvent.toolName, label, agentEvent.args as Record<string, unknown>);
@@ -294,6 +292,13 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 			pendingTools.delete(agentEvent.toolCallId);
 
 			const durationMs = pending ? Date.now() - pending.startTime : 0;
+			if (pending) {
+				const summaryEntry = runState.usedTools[pending.summaryIndex];
+				if (summaryEntry) {
+					summaryEntry.durationMs = durationMs;
+					summaryEntry.isError = agentEvent.isError;
+				}
+			}
 
 			if (agentEvent.isError) {
 				log.logToolError(logCtx, agentEvent.toolName, durationMs, resultStr);
@@ -437,6 +442,7 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 				channelName: ctx.channelName,
 			};
 			runState.pendingTools.clear();
+			runState.usedTools = [];
 			runState.totalUsage = {
 				input: 0,
 				output: 0,
@@ -477,7 +483,9 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 			};
 
 			// Log context info
-			log.logInfo(`Context sizes - system: ${session.systemPrompt.length} chars, memory: ${dynamicCtx.memory.length} chars`);
+			log.logInfo(
+				`Context sizes - system: ${session.systemPrompt.length} chars, memory: ${dynamicCtx.memory.length} chars`,
+			);
 			log.logInfo(`Channels: ${ctx.channels.length}, Users: ${ctx.users.length}`);
 
 			// Build user message with timestamp and username prefix
@@ -572,6 +580,8 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 					}
 				}
 			}
+
+			log.logToolSummary(runState.logCtx!, runState.usedTools);
 
 			// Log usage summary with context info
 			if (runState.totalUsage.cost.total > 0) {

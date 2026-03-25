@@ -6,6 +6,13 @@ export interface LogContext {
 	channelName?: string; // For display like #dev-team vs C16HET4EQ
 }
 
+export interface ToolSummaryEntry {
+	toolName: string;
+	label: string;
+	durationMs?: number;
+	isError?: boolean;
+}
+
 function timestamp(): string {
 	const now = new Date();
 	const hh = String(now.getHours()).padStart(2, "0");
@@ -183,6 +190,33 @@ export function logAgentError(ctx: LogContext | "system", error: string): void {
 		.map((line) => `           ${line}`)
 		.join("\n");
 	console.log(chalk.dim(indented));
+}
+
+export function logToolSummary(ctx: LogContext, tools: ToolSummaryEntry[]): void {
+	if (tools.length === 0) {
+		console.log(chalk.yellow(`${timestamp()} ${formatContext(ctx)} 🛠 Tools: none`));
+		return;
+	}
+
+	const counts = new Map<string, number>();
+	for (const tool of tools) {
+		counts.set(tool.toolName, (counts.get(tool.toolName) || 0) + 1);
+	}
+
+	const summary = Array.from(counts.entries())
+		.map(([toolName, count]) => `${toolName}×${count}`)
+		.join(", ");
+
+	console.log(chalk.yellow(`${timestamp()} ${formatContext(ctx)} 🛠 Tools: ${summary}`));
+
+	const details = tools
+		.map((tool, index) => {
+			const duration = tool.durationMs !== undefined ? ` (${(tool.durationMs / 1000).toFixed(1)}s)` : "";
+			const status = tool.isError ? " ✗" : "";
+			return `           ${index + 1}. ${tool.toolName}: ${tool.label}${duration}${status}`;
+		})
+		.join("\n");
+	console.log(chalk.dim(details));
 }
 
 // Usage summary
