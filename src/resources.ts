@@ -11,7 +11,7 @@ import {
 	DefaultResourceLoader,
 	type Skill,
 } from "@mariozechner/pi-coding-agent";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import * as log from "./log.js";
 import type { SandboxConfig } from "./sandbox.js";
@@ -57,6 +57,10 @@ export function createBabysitterResourceLoader(
 	const extensionDir = join(hostWorkspaceDir, "extensions");
 	const workspaceSkillsDir = join(hostWorkspaceDir, "skills");
 	const channelSkillsDir = join(channelDir, "skills");
+	const extensionPaths = [
+		...discoverExtensionPaths(builtinExtensionsDir),
+		...discoverExtensionPaths(extensionDir),
+	];
 
 	const loader = new DefaultResourceLoader({
 		// Use non-existent paths so pi's default discovery finds nothing
@@ -70,7 +74,9 @@ export function createBabysitterResourceLoader(
 		noThemes: true,
 
 		// Built-in (git) + user (data/) paths
-		additionalExtensionPaths: [builtinExtensionsDir, extensionDir],
+		// DefaultResourceLoader expects concrete extension files/package dirs here,
+		// not a parent "extensions/" directory to scan.
+		additionalExtensionPaths: extensionPaths,
 		additionalSkillPaths: [builtinSkillsDir, workspaceSkillsDir, channelSkillsDir],
 
 		// Translate skill paths from host to sandbox workspace paths
@@ -89,6 +95,25 @@ export function createBabysitterResourceLoader(
 	});
 
 	return loader;
+}
+
+/** Discover concrete extension entries inside an extensions/ directory. */
+function discoverExtensionPaths(extensionsDir: string): string[] {
+	if (!existsSync(extensionsDir)) {
+		return [];
+	}
+
+	const paths: string[] = [];
+	for (const entry of readdirSync(extensionsDir, { withFileTypes: true })) {
+		const fullPath = join(extensionsDir, entry.name);
+		if (entry.isDirectory()) {
+			paths.push(fullPath);
+		} else if (entry.isFile() && /\.(ts|js|mjs|cjs)$/.test(entry.name)) {
+			paths.push(fullPath);
+		}
+	}
+
+	return paths;
 }
 
 /** Translate a host-side path to the sandbox workspace path the agent sees */
