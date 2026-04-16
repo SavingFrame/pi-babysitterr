@@ -171,7 +171,7 @@ function createSlackContext(event: SlackEvent, slack: SlackBot, state: ChannelSt
 					}
 
 					if (shouldLog && messageTs) {
-						slack.logBotResponse(event.channel, text, messageTs);
+						slack.logBotResponse(event.channel, text, messageTs, replyThreadTs);
 					}
 				} catch (err) {
 					log.logWarning("Slack respond error", err instanceof Error ? err.message : String(err));

@@ -11,6 +11,7 @@ export interface Attachment {
 export interface LoggedMessage {
 	date: string; // ISO 8601 date (e.g., "2025-11-26T10:44:00.000Z") for easy grepping
 	ts: string; // slack timestamp or epoch ms
+	threadTs?: string; // root Slack thread timestamp when this message belongs to a thread
 	user: string; // user ID (or "bot" for bot responses)
 	userName?: string; // handle (e.g., "mario")
 	displayName?: string; // display name (e.g., "Mario Zechner")
@@ -147,10 +148,11 @@ export class ChannelStore {
 	/**
 	 * Log a bot response
 	 */
-	async logBotResponse(channelId: string, text: string, ts: string): Promise<void> {
+	async logBotResponse(channelId: string, text: string, ts: string, threadTs?: string): Promise<void> {
 		await this.logMessage(channelId, {
 			date: new Date().toISOString(),
 			ts,
+			threadTs,
 			user: "bot",
 			text,
 			attachments: [],

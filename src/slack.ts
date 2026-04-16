@@ -227,10 +227,11 @@ export class SlackBot {
 	/**
 	 * Log a bot response to log.jsonl
 	 */
-	logBotResponse(channel: string, text: string, ts: string): void {
+	logBotResponse(channel: string, text: string, ts: string, threadTs?: string): void {
 		this.logToFile(channel, {
 			date: new Date().toISOString(),
 			ts,
+			threadTs,
 			user: "bot",
 			text,
 			attachments: [],
@@ -425,6 +426,7 @@ export class SlackBot {
 		this.logToFile(event.channel, {
 			date: new Date(parseFloat(event.ts) * 1000).toISOString(),
 			ts: event.ts,
+			threadTs: event.threadTs,
 			user: event.user,
 			userName: user?.userName,
 			displayName: user?.displayName,
@@ -469,14 +471,33 @@ export class SlackBot {
 			bot_id?: string;
 			text?: string;
 			ts?: string;
+			thread_ts?: string;
+			reply_count?: number;
 			subtype?: string;
-			files?: Array<{ name: string }>;
+			files?: Array<{ name: string; url_private_download?: string; url_private?: string }>;
 		};
-		const allMessages: Message[] = [];
+
+		const allMessages = new Map<string, Message>();
+		const addMessages = (messages: Message[]) => {
+			for (const msg of messages) {
+				if (!msg.ts || existingTs.has(msg.ts) || allMessages.has(msg.ts)) continue;
+				allMessages.set(msg.ts, msg);
+			}
+		};
+		const isRelevantMessage = (msg: Message): boolean => {
+			if (!msg.ts || existingTs.has(msg.ts)) return false;
+			if (msg.user === this.botUserId) return true;
+			if (msg.bot_id) return false;
+			if (msg.subtype !== undefined && msg.subtype !== "file_share") return false;
+			if (!msg.user) return false;
+			if (!msg.text && (!msg.files || msg.files.length === 0)) return false;
+			return true;
+		};
 
 		let cursor: string | undefined;
 		let pageCount = 0;
 		const maxPages = 3;
+		const historyMessages: Message[] = [];
 
 		do {
 			const result = await this.webClient.conversations.history({
@@ -487,25 +508,36 @@ export class SlackBot {
 				cursor,
 			});
 			if (result.messages) {
-				allMessages.push(...(result.messages as Message[]));
+				const messages = result.messages as Message[];
+				historyMessages.push(...messages);
+				addMessages(messages);
 			}
 			cursor = result.response_metadata?.next_cursor;
 			pageCount++;
 		} while (cursor && pageCount < maxPages);
 
-		// Filter: include mom's messages, exclude other bots, skip already logged
-		const relevantMessages = allMessages.filter((msg) => {
-			if (!msg.ts || existingTs.has(msg.ts)) return false; // Skip duplicates
-			if (msg.user === this.botUserId) return true;
-			if (msg.bot_id) return false;
-			if (msg.subtype !== undefined && msg.subtype !== "file_share") return false;
-			if (!msg.user) return false;
-			if (!msg.text && (!msg.files || msg.files.length === 0)) return false;
-			return true;
-		});
+		const threadsToFetch = historyMessages.filter((msg) => msg.ts && msg.reply_count && msg.reply_count > 0);
+		for (const parent of threadsToFetch) {
+			let threadCursor: string | undefined;
+			do {
+				const result = await this.webClient.conversations.replies({
+					channel: channelId,
+					ts: parent.ts!,
+					oldest: latestTs,
+					inclusive: false,
+					limit: 200,
+					cursor: threadCursor,
+				});
+				if (result.messages) {
+					addMessages((result.messages as Message[]).slice(1));
+				}
+				threadCursor = result.response_metadata?.next_cursor;
+			} while (threadCursor);
+		}
 
-		// Reverse to chronological order
-		relevantMessages.reverse();
+		const relevantMessages = Array.from(allMessages.values())
+			.filter(isRelevantMessage)
+			.sort((a, b) => parseFloat(a.ts!) - parseFloat(b.ts!));
 
 		// Log each message to log.jsonl
 		for (const msg of relevantMessages) {
@@ -519,6 +551,7 @@ export class SlackBot {
 			this.logToFile(channelId, {
 				date: new Date(parseFloat(msg.ts!) * 1000).toISOString(),
 				ts: msg.ts!,
+				threadTs: msg.thread_ts,
 				user: isMomMessage ? "bot" : msg.user!,
 				userName: isMomMessage ? undefined : user?.userName,
 				displayName: isMomMessage ? undefined : user?.displayName,
