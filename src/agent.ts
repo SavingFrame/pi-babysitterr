@@ -153,7 +153,7 @@ function createRunner(channelId: string, channelDir: string): AgentRunner {
 	// Create AuthStorage and ModelRegistry
 	// Auth stored outside workspace so agent can't access it
 	const authStorage = AuthStorage.create(join(homedir(), ".pi", "mom", "auth.json"));
-	const modelRegistry = new ModelRegistry(authStorage);
+	const modelRegistry = ModelRegistry.create(authStorage);
 
 	// Resolve model from settings, falling back to defaults
 	const provider = settingsManager.getDefaultProvider() || DEFAULT_PROVIDER;
@@ -190,7 +190,7 @@ function createRunner(channelId: string, channelDir: string): AgentRunner {
 	// Load existing messages
 	const loadedSession = sessionManager.buildSessionContext();
 	if (loadedSession.messages.length > 0) {
-		agent.replaceMessages(loadedSession.messages);
+		agent.state.messages = loadedSession.messages;
 		log.logInfo(`[${channelId}] Loaded ${loadedSession.messages.length} messages from context.jsonl`);
 	}
 
@@ -358,15 +358,14 @@ function createRunner(channelId: string, channelDir: string): AgentRunner {
 					queue.enqueueMessage(text, "main", "response main");
 				}
 			}
-		} else if (event.type === "auto_compaction_start") {
-			log.logInfo(`Auto-compaction started (reason: ${(event as any).reason})`);
+		} else if (event.type === "compaction_start") {
+			log.logInfo(`Compaction started (reason: ${event.reason})`);
 			queue.enqueue(() => ctx.respond("_Compacting context..._", false), "compaction start");
-		} else if (event.type === "auto_compaction_end") {
-			const compEvent = event as any;
-			if (compEvent.result) {
-				log.logInfo(`Auto-compaction complete: ${compEvent.result.tokensBefore} tokens compacted`);
-			} else if (compEvent.aborted) {
-				log.logInfo("Auto-compaction aborted");
+		} else if (event.type === "compaction_end") {
+			if (event.result) {
+				log.logInfo(`Compaction complete: ${event.result.tokensBefore} tokens compacted`);
+			} else if (event.aborted) {
+				log.logInfo("Compaction aborted");
 			}
 		} else if (event.type === "auto_retry_start") {
 			const retryEvent = event as any;
@@ -415,7 +414,7 @@ function createRunner(channelId: string, channelDir: string): AgentRunner {
 			// This picks up any messages synced above
 			const reloadedSession = sessionManager.buildSessionContext();
 			if (reloadedSession.messages.length > 0) {
-				agent.replaceMessages(reloadedSession.messages);
+				agent.state.messages = reloadedSession.messages;
 				log.logInfo(`[${channelId}] Reloaded ${reloadedSession.messages.length} messages from context`);
 			}
 
