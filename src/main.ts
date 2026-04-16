@@ -8,6 +8,7 @@ import * as log from "./log.js";
 import { handlePackageCommand } from "./packages.js";
 import { type MomHandler, type SlackBot, SlackBot as SlackBotClass, type SlackEvent } from "./slack.js";
 import { ChannelStore } from "./store.js";
+import { bootstrapWorkspace } from "./workspace-bootstrap.js";
 
 // ============================================================================
 // Config
@@ -355,6 +356,7 @@ const handler: MomHandler = {
 // Start
 // ============================================================================
 
+await bootstrapWorkspace(workingDir);
 log.logStartup(workingDir);
 
 // Shared store for attachment downloads (also used per-channel in getState)

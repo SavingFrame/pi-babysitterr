@@ -12,7 +12,7 @@ import { DefaultPackageManager, type ProgressEvent } from "@mariozechner/pi-codi
 import { resolve } from "path";
 import { createMomSettingsManager } from "./context.js";
 
-function createWorkspacePackageManager(workspaceDir: string): DefaultPackageManager {
+export function createWorkspacePackageManager(workspaceDir: string): DefaultPackageManager {
 	const settingsManager = createMomSettingsManager(workspaceDir);
 
 	return new DefaultPackageManager({
@@ -41,14 +41,41 @@ function formatProgress(event: ProgressEvent): string {
 	}
 }
 
-async function install(workspaceDir: string, source: string): Promise<number> {
+export async function ensureWorkspacePackageInstalled(
+	workspaceDir: string,
+	source: string,
+	options?: { onProgress?: (message: string) => void },
+): Promise<{ changed: boolean; installedPath?: string }> {
 	const pm = createWorkspacePackageManager(workspaceDir);
-	pm.setProgressCallback((event) => console.log(formatProgress(event)));
+	const settingsManager = createMomSettingsManager(workspaceDir);
+	const emit = options?.onProgress;
 
-	try {
+	if (emit) {
+		pm.setProgressCallback((event) => emit(formatProgress(event)));
+	}
+
+	let changed = false;
+	if (!pm.getInstalledPath(source, "project")) {
 		await pm.install(source, { local: true });
-		pm.addSourceToSettings(source, { local: true });
-		console.log(`Installed ${source}`);
+		changed = true;
+	}
+	if (pm.addSourceToSettings(source, { local: true })) {
+		changed = true;
+	}
+	await settingsManager.flush();
+
+	return {
+		changed,
+		installedPath: pm.getInstalledPath(source, "project"),
+	};
+}
+
+async function install(workspaceDir: string, source: string): Promise<number> {
+	try {
+		const result = await ensureWorkspacePackageInstalled(workspaceDir, source, {
+			onProgress: (message) => console.log(message),
+		});
+		console.log(`${result.changed ? "Installed" : "Already installed"} ${source}`);
 		return 0;
 	} catch (err) {
 		console.error(`Failed to install ${source}: ${err instanceof Error ? err.message : err}`);
